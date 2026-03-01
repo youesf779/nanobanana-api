@@ -305,7 +305,7 @@ def generate(
 
             page.wait_for_timeout(600)
 
-            # ── STEP 7 — Inject prompt via JS (bypasses React re-render) ──
+            # ── STEP 7 — Inject prompt via React fiber (force state update) ──
             prompt = prompt[:2000]  # max 2000 chars
             page.wait_for_selector("#image-prompt", state="visible", timeout=ELEM_WAIT)
             for _ in range(3):
@@ -313,7 +313,10 @@ def generate(
                     page.evaluate("""
                         (prompt) => {
                             const el = document.querySelector('#image-prompt');
-                            el.value = prompt;
+                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLTextAreaElement.prototype, 'value'
+                            ).set;
+                            nativeInputValueSetter.call(el, prompt);
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                         }
@@ -321,13 +324,16 @@ def generate(
                     break
                 except Exception:
                     page.wait_for_timeout(1000)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(1500)
 
-            # ── STEP 8 — Click "Generate Images" ─────────────────
+            # ── STEP 8 — Wait for button enabled then click ───────
             btn_gen = page.locator("button:has-text('Generate Images')").first
             btn_gen.wait_for(state="visible", timeout=ELEM_WAIT)
-            if btn_gen.get_attribute("disabled") is not None:
-                page.wait_for_timeout(2000)
+            # wait up to 15s for button to become enabled
+            for _ in range(30):
+                if btn_gen.get_attribute("disabled") is None:
+                    break
+                page.wait_for_timeout(500)
             btn_gen.click()
             page.wait_for_timeout(500)
 
