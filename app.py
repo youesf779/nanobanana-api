@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 
 import os
+import json
 import base64
 import requests
+from datetime import datetime
 from flask import Flask, request, jsonify, Response
 from core import generate as core_generate, ASPECT_MAP, VALID_MODELS
 
@@ -11,9 +13,34 @@ app = Flask(__name__)
 
 API_BASE = "https://nanobananapro-api.up.railway.app"
 AUTHOR   = "@Ok_Sidra"
+LOG_FILE = "images_log.json"
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Image Log (persistent via JSON file) ─────────────────────────────────────
+
+def _log_load():
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def _log_save(entries):
+    try:
+        with open(LOG_FILE, "w") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _log_add(entry: dict):
+    entries = _log_load()
+    entries.append(entry)
+    _log_save(entries)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _encode(url):
     return base64.urlsafe_b64encode(url.encode()).decode()
@@ -36,8 +63,8 @@ def _err(msg, hint=None, code=400):
 @app.route("/", methods=["GET"])
 def docs():
     return jsonify({
-        "api":     "🍌 NanoBanana Pro",
-        "author":  AUTHOR,
+        "api":    "🍌 NanoBanana Pro",
+        "author": AUTHOR,
         "usage": {
             "url":    f"{API_BASE}/generate",
             "method": "GET",
@@ -50,7 +77,7 @@ def docs():
         },
         "response": {
             "success":   True,
-            "image_url": f"{API_BASE}/img/<token>  ← direct image, original domain hidden",
+            "image_url": f"{API_BASE}/img/<token>  <- direct image, original domain hidden",
             "task_id":   "abc-123",
             "model":     "nano-banana-pro",
             "aspect":    "16:9",
@@ -117,6 +144,16 @@ def generate_image():
         token     = _encode(result["image_url"])
         image_url = f"{API_BASE}/img/{token}"
 
+        # ── Save to log ──
+        _log_add({
+            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "prompt":    prompt,
+            "aspect":    aspect,
+            "model":     model,
+            "task_id":   result.get("task_id", "unknown"),
+            "image_url": image_url,
+        })
+
         return jsonify({
             "success":   True,
             "image_url": image_url,
@@ -126,13 +163,13 @@ def generate_image():
             "prompt":    prompt,
         }), 200
 
-    except ValueError  as e: return _err(str(e), code=400)
+    except ValueError   as e: return _err(str(e), code=400)
     except TimeoutError as e: return _err(str(e), "Try again — generation timed out.", 504)
     except RuntimeError as e: return _err(str(e), code=502)
-    except Exception   as e: return _err(f"Unexpected server error: {e}", f"Contact {AUTHOR}", 500)
+    except Exception    as e: return _err(f"Unexpected server error: {e}", f"Contact {AUTHOR}", 500)
 
 
-# ── GET /img/<token> — Proxy image (hides original domain) ───────────────────
+# ── GET /img/<token> — Proxy image ────────────────────────────────────────────
 
 @app.route("/img/<path:token>", methods=["GET"])
 def proxy_image(token):
@@ -149,7 +186,7 @@ def proxy_image(token):
             real_url, timeout=60, stream=True,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/148.0",
-                "Accept": "image/avif,image/webp,image/png,image/*;q=0.8",
+                "Accept":     "image/avif,image/webp,image/png,image/*;q=0.8",
             },
         )
         if resp.status_code != 200:
@@ -175,6 +212,31 @@ def proxy_image(token):
         return _err("Image fetch timed out.", code=504)
     except Exception as e:
         return _err(f"Proxy error: {e}", code=500)
+
+
+# ── GET /admin79576086 — Admin Panel ──────────────────────────────────────────
+
+@app.route("/admin79576086", methods=["GET"])
+def admin():
+    entries = _log_load()
+    total   = len(entries)
+
+    return jsonify({
+        "success":      True,
+        "total_images": total,
+        "images": [
+            {
+                "no":        i + 1,
+                "timestamp": e.get("timestamp"),
+                "prompt":    e.get("prompt"),
+                "aspect":    e.get("aspect"),
+                "model":     e.get("model"),
+                "task_id":   e.get("task_id"),
+                "image_url": e.get("image_url"),
+            }
+            for i, e in enumerate(reversed(entries))
+        ],
+    })
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
