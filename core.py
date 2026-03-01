@@ -305,13 +305,22 @@ def generate(
 
             page.wait_for_timeout(600)
 
-            # ── STEP 7 — Type prompt ──────────────────────────────
-            box = page.locator("textarea").first
-            box.wait_for(state="visible", timeout=ELEM_WAIT)
-            box.click()
-            page.wait_for_timeout(300)
-            box.fill("")
-            box.type(prompt, delay=25)
+            # ── STEP 7 — Inject prompt via JS (bypasses React re-render) ──
+            prompt = prompt[:2000]  # max 2000 chars
+            page.wait_for_selector("#image-prompt", state="visible", timeout=ELEM_WAIT)
+            for _ in range(3):
+                try:
+                    page.evaluate("""
+                        (prompt) => {
+                            const el = document.querySelector('#image-prompt');
+                            el.value = prompt;
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    """, prompt)
+                    break
+                except Exception:
+                    page.wait_for_timeout(1000)
             page.wait_for_timeout(500)
 
             # ── STEP 8 — Click "Generate Images" ─────────────────
