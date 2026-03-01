@@ -57,6 +57,49 @@ def _err(msg, hint=None, code=400):
         body["hint"] = hint
     return jsonify(body), code
 
+def _extract_image_url(raw: str) -> str:
+    """
+    core.py sometimes returns the full API JSON string instead of a bare URL.
+    This extracts the real image URL from either format.
+    """
+    import json as _json
+    # Already a clean URL
+    if raw.startswith("https://") and not raw.startswith('{"'):
+        return raw
+    # Try to parse as JSON and pull imageUrl
+    try:
+        data = _json.loads(raw)
+        # {"images":[{"imageUrl":"..."}], ...}
+        images = data.get("images") or data.get("data", {}).get("images", [])
+        if images and isinstance(images, list):
+            url = images[0].get("imageUrl") or images[0].get("image_url", "")
+            if url:
+                return url
+        # generic recursive search
+        def _search(obj):
+            EXTS = (".png", ".jpg", ".jpeg", ".webp")
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(v, str) and v.startswith("https://") and (
+                        "nanobanana" in v or any(v.endswith(e) for e in EXTS)
+                    ):
+                        return v
+                    found = _search(v)
+                    if found:
+                        return found
+            elif isinstance(obj, list):
+                for item in obj:
+                    found = _search(item)
+                    if found:
+                        return found
+            return None
+        url = _search(data)
+        if url:
+            return url
+    except Exception:
+        pass
+    return raw  # fallback — return as-is
+
 
 # ── GET / ─────────────────────────────────────────────────────────────────────
 
@@ -140,8 +183,9 @@ def generate_image():
         return _err(f"Invalid model '{model}'.", f"Valid: {', '.join(VALID_MODELS)}")
 
     try:
-        result    = core_generate(prompt=prompt, aspect=aspect, model=model)
-        token     = _encode(result["image_url"])
+        result   = core_generate(prompt=prompt, aspect=aspect, model=model)
+        raw_url  = _extract_image_url(result["image_url"])
+        token    = _encode(raw_url)
         image_url = f"{API_BASE}/img/{token}"
 
         # ── Save to log ──
