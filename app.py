@@ -223,71 +223,106 @@ def generate():
 
 # ═══════════════════════════════════════════
 # POST /edit
-# Body: { "prompt": "...", "image_url": "https://..." }
-# OR multipart with image file
+# Body JSON: { "prompt": "...", "image_urls": ["url1", "url2", ...] }  ← max 5
+# OR multipart: prompt + image files (field name: image) ← max 5
 # ═══════════════════════════════════════════
 @app.route("/edit", methods=["POST"])
 def edit():
     prompt      = None
-    image_url   = None
-    image_bytes = None
+    image_urls  = []   # final list of URLs to send (max 5)
 
     if request.content_type and "multipart" in request.content_type:
-        prompt = request.form.get("prompt", "").strip()
-        file   = request.files.get("image")
-        if file:
-            image_bytes = file.read()
-    else:
-        data      = request.get_json()
-        prompt    = data.get("prompt", "").strip()
-        image_url = data.get("image_url", "").strip()
+        prompt      = request.form.get("prompt", "").strip()
+        files       = request.files.getlist("image")  # supports multiple files
 
-    if not prompt:
-        return jsonify({"error": "prompt مطلوب"}), 400
-    if not image_url and not image_bytes:
-        return jsonify({"error": "image_url أو image file مطلوب"}), 400
+        if not files:
+            return jsonify({"error": "image file مطلوب"}), 400
+        if len(files) > 5:
+            return jsonify({"error": "الحد الأقصى 5 صور فقط"}), 400
+
+        if not prompt:
+            return jsonify({"error": "prompt مطلوب"}), 400
+
+        try:
+            auth_cookie = get_auth_cookie()
+            gen_hdrs = {
+                **HEADERS,
+                "Content-Type":   "application/json",
+                "sec-fetch-site": "same-origin",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-dest": "empty",
+                "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
+            }
+
+            # Upload each file and collect URLs
+            for file in files:
+                img_bytes = file.read()
+
+                rp         = requests.post(
+                    f"{SITE}/api/upload/image/presigned-url",
+                    headers=gen_hdrs, json={}, timeout=15
+                )
+                pj         = rp.json()
+                signed_url = pj.get("signedUrl")
+                uploaded_url = pj.get("url")
+
+                if not signed_url:
+                    return jsonify({"error": "فشل الحصول على presigned URL"}), 500
+
+                requests.put(
+                    signed_url,
+                    data=img_bytes,
+                    headers={"Content-Type": "image/jpeg"},
+                    timeout=30
+                )
+                image_urls.append(uploaded_url)
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    else:
+        data       = request.get_json()
+        prompt     = data.get("prompt", "").strip()
+
+        # يقبل image_urls (array) أو image_url (string) للتوافق مع القديم
+        raw_urls   = data.get("image_urls") or []
+        single_url = data.get("image_url", "").strip()
+
+        if not raw_urls and single_url:
+            raw_urls = [single_url]
+
+        if not raw_urls:
+            return jsonify({"error": "image_urls أو image_url مطلوب"}), 400
+        if len(raw_urls) > 5:
+            return jsonify({"error": "الحد الأقصى 5 صور فقط"}), 400
+
+        if not prompt:
+            return jsonify({"error": "prompt مطلوب"}), 400
+
+        image_urls = raw_urls
+
+        try:
+            auth_cookie = get_auth_cookie()
+            gen_hdrs = {
+                **HEADERS,
+                "Content-Type":   "application/json",
+                "sec-fetch-site": "same-origin",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-dest": "empty",
+                "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
+            }
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     try:
-        auth_cookie = get_auth_cookie()
-        gen_hdrs = {
-            **HEADERS,
-            "Content-Type":   "application/json",
-            "sec-fetch-site": "same-origin",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-dest": "empty",
-            "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
-        }
-
-        # If we have bytes, upload them first to get presigned URL
-        if image_bytes:
-            # Step 1: Get presigned URL
-            rp         = requests.post(
-                f"{SITE}/api/upload/image/presigned-url",
-                headers=gen_hdrs, json={}, timeout=15
-            )
-            pj         = rp.json()
-            signed_url = pj.get("signedUrl")
-            image_url  = pj.get("url")
-
-            if not signed_url:
-                return jsonify({"error": "فشل الحصول على presigned URL"}), 500
-
-            # Step 2: Upload image
-            requests.put(
-                signed_url,
-                data=image_bytes,
-                headers={"Content-Type": "image/jpeg"},
-                timeout=30
-            )
-
-        # Step 3: Generate with image-to-image
+        # Generate with image-to-image (up to 5 source images)
         payload = {
             "prompt":          prompt,
             "generateType":    "image-to-image",
             "modelId":         "nano-banana-pro",
             "aspectRatio":     "1:1",
             "resolution":      "4K",
-            "sourceImageUrls": [image_url]
+            "sourceImageUrls": image_urls
         }
 
         rg      = requests.post(f"{SITE}/api/image/kie/generate",
@@ -307,31 +342,16 @@ def edit():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "name":    "NanoBananaImg API",
-        "rights":  "@BOTATKILWA | @x1_v5",
-        "status":  "running",
+        "name": "NanoBananaImg API",
+        "rights": "@BOTATKILWA | @x1_v5",
         "endpoints": {
-            "POST /generate": {
-                "description": "توليد صورة من نص",
-                "body": {
-                    "prompt":       "وصف الصورة (مطلوب)",
-                    "aspect_ratio": "1:1 | 16:9 | 9:16 (اختياري، افتراضي 1:1)"
-                },
-                "example": {
-                    "prompt": "a beautiful sunset over the ocean",
-                    "aspect_ratio": "16:9"
-                }
-            },
             "POST /edit": {
-                "description": "تعديل صورة موجودة",
-                "body_json": {
-                    "prompt":    "وصف التعديل (مطلوب)",
-                    "image_url": "رابط الصورة (مطلوب إذا لم ترسل ملف)"
-                },
-                "body_multipart": {
-                    "prompt": "وصف التعديل (مطلوب)",
-                    "image":  "ملف الصورة (مطلوب إذا لم ترسل رابط)"
-                }
+                "image_urls": "list of str — up to 5 URLs (or multipart image files)",
+                "prompt": "str"
+            },
+            "POST /generate": {
+                "aspect_ratio": "1:1 | 16:9 | 9:16",
+                "prompt": "str"
             }
         }
     })
