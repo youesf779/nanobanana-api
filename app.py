@@ -226,6 +226,23 @@ def generate():
 # Body: { "prompt": "...", "image_url": "https://..." }
 # OR multipart with image file
 # ═══════════════════════════════════════════
+IMGBB_KEY = "b37210104f155800c8b4d358c75a8ec7"
+
+
+def upload_to_imgbb(image_bytes):
+    """Upload image bytes to imgbb and return public URL"""
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    r = requests.post(
+        "https://api.imgbb.com/1/upload",
+        data={"key": IMGBB_KEY, "image": b64},
+        timeout=30
+    )
+    rj = r.json()
+    if not rj.get("success"):
+        raise Exception("فشل رفع الصورة على imgbb: " + str(rj.get("error", {}).get("message", "")))
+    return rj["data"]["url"]
+
+
 @app.route("/edit", methods=["POST"])
 def edit():
     prompt      = None
@@ -248,6 +265,10 @@ def edit():
         return jsonify({"error": "image_url أو image file مطلوب"}), 400
 
     try:
+        # Step 1: إذا فيه ملف → ارفعه على imgbb أولاً للحصول على رابط عام
+        if image_bytes:
+            image_url = upload_to_imgbb(image_bytes)
+
         auth_cookie = get_auth_cookie()
         gen_hdrs = {
             **HEADERS,
@@ -258,29 +279,7 @@ def edit():
             "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
         }
 
-        # If we have bytes, upload them first to get presigned URL
-        if image_bytes:
-            # Step 1: Get presigned URL
-            rp         = requests.post(
-                f"{SITE}/api/upload/image/presigned-url",
-                headers=gen_hdrs, json={}, timeout=15
-            )
-            pj         = rp.json()
-            signed_url = pj.get("signedUrl")
-            image_url  = pj.get("url")
-
-            if not signed_url:
-                return jsonify({"error": "فشل الحصول على presigned URL"}), 500
-
-            # Step 2: Upload image
-            requests.put(
-                signed_url,
-                data=image_bytes,
-                headers={"Content-Type": "image/jpeg"},
-                timeout=30
-            )
-
-        # Step 3: Generate with image-to-image
+        # Step 2: Generate with image-to-image using imgbb URL
         payload = {
             "prompt":          prompt,
             "generateType":    "image-to-image",
