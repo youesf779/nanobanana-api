@@ -214,7 +214,8 @@ def generate():
         if not task_id:
             return jsonify({"error": "فشل بدء التوليد", "details": rg.text}), 500
 
-        image_url = poll_task(task_id, gen_hdrs)
+        nano_url  = poll_task(task_id, gen_hdrs)
+        image_url = result_to_imgbb(nano_url)
         return jsonify({"success": True, "image_url": image_url})
 
     except Exception as e:
@@ -241,6 +242,13 @@ def upload_to_imgbb(image_bytes):
     if not rj.get("success"):
         raise Exception("فشل رفع الصورة على imgbb: " + str(rj.get("error", {}).get("message", "")))
     return rj["data"]["url"]
+
+
+def result_to_imgbb(nano_url):
+    """Download result image from nanobanana and re-upload to imgbb"""
+    r = requests.get(nano_url, timeout=30)
+    r.raise_for_status()
+    return upload_to_imgbb(r.content)
 
 
 @app.route("/edit", methods=["POST"])
@@ -296,7 +304,8 @@ def edit():
         if not task_id:
             return jsonify({"error": "فشل بدء التعديل", "details": rg.text}), 500
 
-        result_url = poll_task(task_id, gen_hdrs)
+        nano_url   = poll_task(task_id, gen_hdrs)
+        result_url = result_to_imgbb(nano_url)
         return jsonify({"success": True, "image_url": result_url})
 
     except Exception as e:
