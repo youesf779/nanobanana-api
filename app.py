@@ -45,9 +45,31 @@ SB_HDRS = {
     "referer":                f"{SITE}/",
 }
 
+# ══════════════════════════════════════════════
+# قائمة البروكسيات — يتم الاختيار عشوائياً
+# ══════════════════════════════════════════════
+PROXIES_LIST = [
+    {
+        "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.166.29:sy8ob8u7ip3g@brd.superproxy.io:33335",
+        "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.166.29:sy8ob8u7ip3g@brd.superproxy.io:33335",
+    },
+    {
+        "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.169.117:sy8ob8u7ip3g@brd.superproxy.io:33335",
+        "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.169.117:sy8ob8u7ip3g@brd.superproxy.io:33335",
+    },
+    {
+        "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-178.171.58.92:sy8ob8u7ip3g@brd.superproxy.io:33335",
+        "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-178.171.58.92:sy8ob8u7ip3g@brd.superproxy.io:33335",
+    },
+]
 
-def make_session():
-    """Session مع retry تلقائي عند انقطاع الاتصال"""
+
+def get_random_proxy():
+    return random.choice(PROXIES_LIST)
+
+
+def make_session(use_proxy=True):
+    """Session مع retry تلقائي + proxy عشوائي"""
     session = requests.Session()
     retry = Retry(
         total=4,
@@ -59,6 +81,8 @@ def make_session():
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
+    if use_proxy:
+        session.proxies.update(get_random_proxy())
     return session
 
 
@@ -75,8 +99,8 @@ def gen_pkce():
 
 
 def get_auth_cookie():
-    """Create new account and return auth cookie"""
-    session = make_session()
+    """Create new account and return auth cookie — via proxy"""
+    session = make_session(use_proxy=True)
 
     # 1. Create email
     r = session.get(f"{MAIL_API}/domains", timeout=15)
@@ -291,7 +315,6 @@ def edit():
         return jsonify({"error": "image_url أو image file مطلوب"}), 400
 
     try:
-        # Step 1: إذا فيه ملف → ارفعه على imgbb أولاً للحصول على رابط عام
         if image_bytes:
             image_url = upload_to_imgbb(image_bytes)
 
@@ -305,7 +328,6 @@ def edit():
             "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
         }
 
-        # Step 2: Generate with image-to-image using imgbb URL
         payload = {
             "prompt":          prompt,
             "generateType":    "image-to-image",
