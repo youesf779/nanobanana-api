@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import requests
 import json
 import time
@@ -13,10 +15,11 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-SITE     = "https://nanobananaimg.com"
-SB_URL   = "https://gfoafqcjhfqigdwtxwqt.supabase.co"
-SB_ANON  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmb2FmcWNqaGZxaWdkd3R4d3F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUzNTY1NDksImV4cCI6MjA3MDkzMjU0OX0.Qe1pmu-LTkQNqNjKEqcARyfqhtlL758eu2gakrz66Og"
-MAIL_API = "https://api.mail.tm"
+SITE      = "https://nanobananaimg.com"
+SB_URL    = "https://gfoafqcjhfqigdwtxwqt.supabase.co"
+SB_ANON   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmb2FmcWNqaGZxaWdkd3R4d3F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUzNTY1NDksImV4cCI6MjA3MDkzMjU0OX0.Qe1pmu-LTkQNqNjKEqcARyfqhtlL758eu2gakrz66Og"
+MAIL_API  = "https://api.mail.tm"
+IMGBB_KEY = "b37210104f155800c8b4d358c75a8ec7"
 
 UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36"
 
@@ -43,6 +46,22 @@ SB_HDRS = {
 }
 
 
+def make_session():
+    """Session مع retry تلقائي عند انقطاع الاتصال"""
+    session = requests.Session()
+    retry = Retry(
+        total=4,
+        backoff_factor=2,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 def rand_str(n=10):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
@@ -57,18 +76,20 @@ def gen_pkce():
 
 def get_auth_cookie():
     """Create new account and return auth cookie"""
+    session = make_session()
+
     # 1. Create email
-    r = requests.get(f"{MAIL_API}/domains", timeout=10)
+    r = session.get(f"{MAIL_API}/domains", timeout=15)
     domains = [d["domain"] for d in r.json().get("hydra:member", [])]
     email = password = mail_token = None
 
     for domain in domains:
         e  = f"{rand_str()}@{domain}"
         p  = "Pass" + rand_str(6)
-        r2 = requests.post(f"{MAIL_API}/accounts", json={"address": e, "password": p}, timeout=10)
+        r2 = session.post(f"{MAIL_API}/accounts", json={"address": e, "password": p}, timeout=15)
         if r2.status_code not in (200, 201):
             continue
-        r3 = requests.post(f"{MAIL_API}/token", json={"address": e, "password": p}, timeout=10)
+        r3 = session.post(f"{MAIL_API}/token", json={"address": e, "password": p}, timeout=15)
         if r3.status_code != 200:
             continue
         email, password, mail_token = e, p, r3.json()["token"]
@@ -80,7 +101,7 @@ def get_auth_cookie():
     # 2. Send OTP
     verifier, challenge = gen_pkce()
     redirect = f"{SITE}/auth/callback?next=%2F"
-    requests.post(
+    session.post(
         f"{SB_URL}/auth/v1/otp",
         params={"redirect_to": redirect},
         headers=SB_HDRS,
@@ -101,10 +122,10 @@ def get_auth_cookie():
 
     for _ in range(24):
         time.sleep(5)
-        r    = requests.get(f"{MAIL_API}/messages", headers=hdrs_mail, timeout=10)
+        r    = session.get(f"{MAIL_API}/messages", headers=hdrs_mail, timeout=15)
         msgs = r.json().get("hydra:member", [])
         if msgs:
-            r2   = requests.get(f"{MAIL_API}/messages/{msgs[0]['id']}", headers=hdrs_mail, timeout=10)
+            r2   = session.get(f"{MAIL_API}/messages/{msgs[0]['id']}", headers=hdrs_mail, timeout=15)
             body = r2.json().get("text", "") or str(r2.json().get("html", [""])[0])
             m    = re.search(r'token_hash=(pkce_[^&\s"<]+)', body)
             if m:
@@ -115,7 +136,7 @@ def get_auth_cookie():
         raise Exception("لم يصل OTP")
 
     # 4. Verify
-    rv = requests.post(
+    rv = session.post(
         f"{SB_URL}/auth/v1/verify",
         headers=SB_HDRS,
         json={"token_hash": token_hash, "type": "email", "code_verifier": verifier},
@@ -128,7 +149,7 @@ def get_auth_cookie():
     user          = rj.get("user", {})
 
     if not access_token:
-        rx = requests.post(
+        rx = session.post(
             f"{SB_URL}/auth/v1/token",
             params={"grant_type": "pkce"},
             headers=SB_HDRS,
@@ -173,6 +194,27 @@ def poll_task(task_id, gen_hdrs, timeout=240):
         if status == "failed":
             raise Exception(data.get("failedReason", "فشل التوليد"))
     raise Exception("انتهى وقت الانتظار")
+
+
+def upload_to_imgbb(image_bytes):
+    """Upload image bytes to imgbb and return public URL"""
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    r = requests.post(
+        "https://api.imgbb.com/1/upload",
+        data={"key": IMGBB_KEY, "image": b64},
+        timeout=30
+    )
+    rj = r.json()
+    if not rj.get("success"):
+        raise Exception("فشل رفع الصورة على imgbb: " + str(rj.get("error", {}).get("message", "")))
+    return rj["data"]["url"]
+
+
+def result_to_imgbb(nano_url):
+    """Download result image from nanobanana and re-upload to imgbb"""
+    r = requests.get(nano_url, timeout=30)
+    r.raise_for_status()
+    return upload_to_imgbb(r.content)
 
 
 # ═══════════════════════════════════════════
@@ -227,30 +269,6 @@ def generate():
 # Body: { "prompt": "...", "image_url": "https://..." }
 # OR multipart with image file
 # ═══════════════════════════════════════════
-IMGBB_KEY = "b37210104f155800c8b4d358c75a8ec7"
-
-
-def upload_to_imgbb(image_bytes):
-    """Upload image bytes to imgbb and return public URL"""
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    r = requests.post(
-        "https://api.imgbb.com/1/upload",
-        data={"key": IMGBB_KEY, "image": b64},
-        timeout=30
-    )
-    rj = r.json()
-    if not rj.get("success"):
-        raise Exception("فشل رفع الصورة على imgbb: " + str(rj.get("error", {}).get("message", "")))
-    return rj["data"]["url"]
-
-
-def result_to_imgbb(nano_url):
-    """Download result image from nanobanana and re-upload to imgbb"""
-    r = requests.get(nano_url, timeout=30)
-    r.raise_for_status()
-    return upload_to_imgbb(r.content)
-
-
 @app.route("/edit", methods=["POST"])
 def edit():
     prompt      = None
