@@ -46,9 +46,10 @@ SB_HDRS = {
 }
 
 # ══════════════════════════════════════════════
-# قائمة البروكسيات — يتم الاختيار عشوائياً
+# البروكسيات — يتم الاختيار عشوائياً
 # ══════════════════════════════════════════════
 PROXIES_LIST = [
+    # Bright Data
     {
         "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.166.29:sy8ob8u7ip3g@brd.superproxy.io:33335",
         "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.166.29:sy8ob8u7ip3g@brd.superproxy.io:33335",
@@ -60,6 +61,19 @@ PROXIES_LIST = [
     {
         "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-178.171.58.92:sy8ob8u7ip3g@brd.superproxy.io:33335",
         "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-178.171.58.92:sy8ob8u7ip3g@brd.superproxy.io:33335",
+    },
+    # Proxy 2
+    {
+        "http":  "http://xrjzsdkb:3ng5fu03xdvh@31.59.20.176:6754",
+        "https": "http://xrjzsdkb:3ng5fu03xdvh@31.59.20.176:6754",
+    },
+    {
+        "http":  "http://xrjzsdkb:3ng5fu03xdvh@23.95.150.145:6114",
+        "https": "http://xrjzsdkb:3ng5fu03xdvh@23.95.150.145:6114",
+    },
+    {
+        "http":  "http://xrjzsdkb:3ng5fu03xdvh@198.23.239.134:6540",
+        "https": "http://xrjzsdkb:3ng5fu03xdvh@198.23.239.134:6540",
     },
 ]
 
@@ -220,25 +234,58 @@ def poll_task(task_id, gen_hdrs, timeout=240):
     raise Exception("انتهى وقت الانتظار")
 
 
+# ══════════════════════════════════════════════
+# رفع الصورة — catbox.moe أولاً، imgbb كـ fallback
+# ══════════════════════════════════════════════
+def upload_to_catbox(image_bytes):
+    """
+    Primary: catbox.moe — مجاني، بدون API key، CDN سريع
+    يرجع رابط مثل: https://files.catbox.moe/abc123.jpg
+    """
+    r = requests.post(
+        "https://catbox.moe/user/api.php",
+        data={"reqtype": "fileupload"},
+        files={"fileToUpload": ("image.jpg", image_bytes, "image/jpeg")},
+        timeout=45
+    )
+    url = r.text.strip()
+    if not url.startswith("https://"):
+        raise Exception(f"catbox رد غير متوقع: {url[:100]}")
+    return url
+
+
 def upload_to_imgbb(image_bytes):
-    """Upload image bytes to imgbb and return public URL"""
+    """Fallback: imgbb"""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     r = requests.post(
         "https://api.imgbb.com/1/upload",
         data={"key": IMGBB_KEY, "image": b64},
-        timeout=30
+        timeout=45
     )
     rj = r.json()
     if not rj.get("success"):
-        raise Exception("فشل رفع الصورة على imgbb: " + str(rj.get("error", {}).get("message", "")))
+        raise Exception("فشل imgbb: " + str(rj.get("error", {}).get("message", "")))
     return rj["data"]["url"]
 
 
-def result_to_imgbb(nano_url):
-    """Download result image from nanobanana and re-upload to imgbb"""
-    r = requests.get(nano_url, timeout=30)
+def upload_image(image_bytes):
+    """
+    يحاول catbox أولاً، إذا فشل يجرب imgbb
+    """
+    try:
+        return upload_to_catbox(image_bytes)
+    except Exception as catbox_err:
+        try:
+            return upload_to_imgbb(image_bytes)
+        except Exception as imgbb_err:
+            raise Exception(f"فشل الرفع — catbox: {catbox_err} | imgbb: {imgbb_err}")
+
+
+def result_to_cdn(nano_url):
+    """تحميل الصورة من nanobanana وإعادة رفعها على CDN"""
+    r = requests.get(nano_url, timeout=45)
     r.raise_for_status()
-    return upload_to_imgbb(r.content)
+    return upload_image(r.content)
 
 
 # ═══════════════════════════════════════════
@@ -281,7 +328,7 @@ def generate():
             return jsonify({"error": "فشل بدء التوليد", "details": rg.text}), 500
 
         nano_url  = poll_task(task_id, gen_hdrs)
-        image_url = result_to_imgbb(nano_url)
+        image_url = result_to_cdn(nano_url)
         return jsonify({"success": True, "image_url": image_url})
 
     except Exception as e:
@@ -315,8 +362,9 @@ def edit():
         return jsonify({"error": "image_url أو image file مطلوب"}), 400
 
     try:
+        # إذا فيه ملف → ارفعه على CDN أولاً
         if image_bytes:
-            image_url = upload_to_imgbb(image_bytes)
+            image_url = upload_image(image_bytes)
 
         auth_cookie = get_auth_cookie()
         gen_hdrs = {
@@ -345,7 +393,7 @@ def edit():
             return jsonify({"error": "فشل بدء التعديل", "details": rg.text}), 500
 
         nano_url   = poll_task(task_id, gen_hdrs)
-        result_url = result_to_imgbb(nano_url)
+        result_url = result_to_cdn(nano_url)
         return jsonify({"success": True, "image_url": result_url})
 
     except Exception as e:
