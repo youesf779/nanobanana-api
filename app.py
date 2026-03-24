@@ -51,30 +51,7 @@ SB_HDRS = {
 PROXIES_LIST = [
     # Bright Data
     {
-        "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.166.29:sy8ob8u7ip3g@brd.superproxy.io:33335",
-        "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.166.29:sy8ob8u7ip3g@brd.superproxy.io:33335",
-    },
-    {
-        "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.169.117:sy8ob8u7ip3g@brd.superproxy.io:33335",
-        "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-158.46.169.117:sy8ob8u7ip3g@brd.superproxy.io:33335",
-    },
-    {
-        "http":  "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-178.171.58.92:sy8ob8u7ip3g@brd.superproxy.io:33335",
-        "https": "http://brd-customer-hl_43f07ec8-zone-datacenter_proxy3-ip-178.171.58.92:sy8ob8u7ip3g@brd.superproxy.io:33335",
-    },
-    # Proxy 2
-    {
-        "http":  "http://xrjzsdkb:3ng5fu03xdvh@31.59.20.176:6754",
-        "https": "http://xrjzsdkb:3ng5fu03xdvh@31.59.20.176:6754",
-    },
-    {
-        "http":  "http://xrjzsdkb:3ng5fu03xdvh@23.95.150.145:6114",
-        "https": "http://xrjzsdkb:3ng5fu03xdvh@23.95.150.145:6114",
-    },
-    {
-        "http":  "http://xrjzsdkb:3ng5fu03xdvh@198.23.239.134:6540",
-        "https": "http://xrjzsdkb:3ng5fu03xdvh@198.23.239.134:6540",
-    },
+        "http":  "brd.superproxy.io:33335:brd-customer-hl_43f07ec8-zone-isp_proxy1-ip-178.171.83.16:e0zlux04lzwo",
 ]
 
 
