@@ -21,11 +21,6 @@ SB_ANON   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZi
 MAIL_API  = "https://api.mail.tm"
 IMGBB_KEY = "b37210104f155800c8b4d358c75a8ec7"
 
-PROXY = {
-    "http":  "http://brd-customer-hl_43f07ec8-zone-isp_proxy1-ip-178.171.83.16:e0zlux04lzwo@brd.superproxy.io:33335",
-    "https": "http://brd-customer-hl_43f07ec8-zone-isp_proxy1-ip-178.171.83.16:e0zlux04lzwo@brd.superproxy.io:33335",
-}
-
 UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36"
 
 HEADERS = {
@@ -36,64 +31,92 @@ HEADERS = {
     "sec-gpc":            "1",
     "accept-language":    "ar-EG,ar;q=0.6",
     "origin":             SITE,
-    "referer":            SITE + "/",
+    "referer":            f"{SITE}/",
 }
 
 SB_HDRS = {
     "User-Agent":             UA,
     "Content-Type":           "application/json",
-    "authorization":          "Bearer " + SB_ANON,
+    "authorization":          f"Bearer {SB_ANON}",
     "apikey":                 SB_ANON,
     "x-supabase-api-version": "2024-01-01",
     "x-client-info":          "supabase-ssr/0.6.1 createBrowserClient",
     "origin":                 SITE,
-    "referer":                SITE + "/",
+    "referer":                f"{SITE}/",
 }
 
+# ══════════════════════════════════════════════
+# البروكسيات — يتم الاختيار عشوائياً
+# ══════════════════════════════════════════════
+PROXIES_LIST = [
+    {
+        "http":  "http://xrjzsdkb:3ng5fu03xdvh@31.59.20.176:6754",
+        "https": "http://xrjzsdkb:3ng5fu03xdvh@31.59.20.176:6754",
+    },
+    {
+        "http":  "http://xrjzsdkb:3ng5fu03xdvh@23.95.150.145:6114",
+        "https": "http://xrjzsdkb:3ng5fu03xdvh@23.95.150.145:6114",
+    },
+    {
+        "http":  "http://xrjzsdkb:3ng5fu03xdvh@198.23.239.134:6540",
+        "https": "http://xrjzsdkb:3ng5fu03xdvh@198.23.239.134:6540",
+    },
+]
 
-def make_session(use_proxy=False):
+
+def get_random_proxy():
+    return random.choice(PROXIES_LIST)
+
+
+def make_session(use_proxy=True):
+    """Session مع retry تلقائي + proxy عشوائي"""
     session = requests.Session()
     retry = Retry(
-        total=3,
+        total=5,
+        connect=3,
+        read=3,
         backoff_factor=2,
         status_forcelist=[500, 502, 503, 504],
         allowed_methods=["GET", "POST"],
-        raise_on_status=False
+        raise_on_status=False,
+        raise_on_redirect=False
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     if use_proxy:
-        session.proxies.update(PROXY)
+        session.proxies.update(get_random_proxy())
     return session
 
 
 def rand_str(n=10):
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 
 def gen_pkce():
-    verifier  = base64.urlsafe_b64encode(os.urandom(40)).rstrip(b"=").decode()
+    verifier  = base64.urlsafe_b64encode(os.urandom(40)).rstrip(b'=').decode()
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()
-    ).rstrip(b"=").decode()
+    ).rstrip(b'=').decode()
     return verifier, challenge
 
 
 def get_auth_cookie():
+    """Create new account and return auth cookie — via proxy"""
     session = make_session(use_proxy=True)
 
-    r       = session.get(MAIL_API + "/domains", timeout=15)
+    # 1. Create email
+    r = session.get(f"{MAIL_API}/domains", timeout=15)
     domains = [d["domain"] for d in r.json().get("hydra:member", [])]
-    email   = password = mail_token = None
+    email = password = mail_token = None
 
     for domain in domains:
-        e  = rand_str() + "@" + domain
+        e  = f"{rand_str()}@{domain}"
         p  = "Pass" + rand_str(6)
-        r2 = session.post(MAIL_API + "/accounts", json={"address": e, "password": p}, timeout=15)
+        r2 = session.post(f"{MAIL_API}/accounts", json={"address": e, "password": p}, timeout=15)
         if r2.status_code not in (200, 201):
             continue
-        r3 = session.post(MAIL_API + "/token", json={"address": e, "password": p}, timeout=15)
+        r3 = session.post(f"{MAIL_API}/token", json={"address": e, "password": p}, timeout=15)
         if r3.status_code != 200:
             continue
         email, password, mail_token = e, p, r3.json()["token"]
@@ -102,33 +125,36 @@ def get_auth_cookie():
     if not email:
         raise Exception("فشل إنشاء الإيميل")
 
+    # 2. Send OTP
     verifier, challenge = gen_pkce()
+    redirect = f"{SITE}/auth/callback?next=%2F"
     session.post(
-        SB_URL + "/auth/v1/otp",
-        params={"redirect_to": SITE + "/auth/callback?next=%2F"},
+        f"{SB_URL}/auth/v1/otp",
+        params={"redirect_to": redirect},
         headers=SB_HDRS,
         json={
-            "email":                 email,
-            "data":                  {},
-            "create_user":           True,
-            "gotrue_meta_security":  {},
-            "code_challenge":        challenge,
-            "code_challenge_method": "s256",
+            "email":                  email,
+            "data":                   {},
+            "create_user":            True,
+            "gotrue_meta_security":   {},
+            "code_challenge":         challenge,
+            "code_challenge_method":  "s256"
         },
-        timeout=15,
+        timeout=15
     )
 
-    hdrs_mail  = {"Authorization": "Bearer " + mail_token}
+    # 3. Wait for magic link
+    hdrs_mail = {"Authorization": f"Bearer {mail_token}"}
     token_hash = None
 
     for _ in range(24):
         time.sleep(5)
-        r    = session.get(MAIL_API + "/messages", headers=hdrs_mail, timeout=15)
+        r    = session.get(f"{MAIL_API}/messages", headers=hdrs_mail, timeout=15)
         msgs = r.json().get("hydra:member", [])
         if msgs:
-            r2   = session.get(MAIL_API + "/messages/" + msgs[0]["id"], headers=hdrs_mail, timeout=15)
+            r2   = session.get(f"{MAIL_API}/messages/{msgs[0]['id']}", headers=hdrs_mail, timeout=15)
             body = r2.json().get("text", "") or str(r2.json().get("html", [""])[0])
-            m    = re.search(r"token_hash=(pkce_[^&\s\"<]+)", body)
+            m    = re.search(r'token_hash=(pkce_[^&\s"<]+)', body)
             if m:
                 token_hash = m.group(1)
                 break
@@ -136,11 +162,12 @@ def get_auth_cookie():
     if not token_hash:
         raise Exception("لم يصل OTP")
 
+    # 4. Verify
     rv = session.post(
-        SB_URL + "/auth/v1/verify",
+        f"{SB_URL}/auth/v1/verify",
         headers=SB_HDRS,
         json={"token_hash": token_hash, "type": "email", "code_verifier": verifier},
-        timeout=15,
+        timeout=15
     )
     rj            = rv.json()
     access_token  = rj.get("access_token")
@@ -150,11 +177,11 @@ def get_auth_cookie():
 
     if not access_token:
         rx = session.post(
-            SB_URL + "/auth/v1/token",
+            f"{SB_URL}/auth/v1/token",
             params={"grant_type": "pkce"},
             headers=SB_HDRS,
             json={"auth_code": token_hash, "code_verifier": verifier},
-            timeout=15,
+            timeout=15
         )
         rj            = rx.json()
         access_token  = rj.get("access_token")
@@ -165,81 +192,107 @@ def get_auth_cookie():
     if not access_token:
         raise Exception("فشل التفعيل")
 
-    cookie_val = "base64-" + base64.b64encode(json.dumps({
+    auth_cookie = "base64-" + base64.b64encode(json.dumps({
         "access_token":  access_token,
         "token_type":    "bearer",
         "expires_in":    3600,
         "expires_at":    expires_at,
         "refresh_token": refresh_token,
-        "user":          user,
+        "user":          user
     }).encode()).decode()
 
-    return cookie_val
+    return auth_cookie
 
 
 def poll_task(task_id, gen_hdrs, timeout=240):
+    """Poll task until completed or failed"""
+    session = make_session(use_proxy=True)
     for _ in range(timeout // 4):
         time.sleep(4)
-        rs     = requests.get(
-            SITE + "/api/image/task-status?taskId=" + task_id,
-            headers=gen_hdrs,
-            timeout=15,
-        )
-        data   = rs.json()
-        status = data.get("status", "")
-        if status == "completed":
-            urls = data.get("imageUrls", [])
-            return urls[0] if urls else None
-        if status == "failed":
-            raise Exception(data.get("failedReason", "فشل التوليد"))
+        try:
+            rs = session.get(
+                f"{SITE}/api/image/task-status?taskId={task_id}",
+                headers=gen_hdrs,
+                timeout=20
+            )
+            data   = rs.json()
+            status = data.get("status", "")
+            if status == "completed":
+                urls = data.get("imageUrls", [])
+                return urls[0] if urls else None
+            if status == "failed":
+                raise Exception(data.get("failedReason", "فشل التوليد"))
+        except Exception as e:
+            if "فشل التوليد" in str(e):
+                raise
+            # connection error — retry with fresh session
+            session = make_session(use_proxy=True)
+            continue
     raise Exception("انتهى وقت الانتظار")
 
 
+# ══════════════════════════════════════════════
+# رفع الصورة — catbox.moe أولاً، imgbb كـ fallback
+# ══════════════════════════════════════════════
 def upload_to_catbox(image_bytes):
-    r   = requests.post(
+    """
+    Primary: catbox.moe — مجاني، بدون API key، CDN سريع
+    يرجع رابط مثل: https://files.catbox.moe/abc123.jpg
+    """
+    r = requests.post(
         "https://catbox.moe/user/api.php",
         data={"reqtype": "fileupload"},
         files={"fileToUpload": ("image.jpg", image_bytes, "image/jpeg")},
-        timeout=60,
+        timeout=45
     )
     url = r.text.strip()
-    if url.startswith("https://"):
-        return url
-    raise Exception("catbox فشل: " + url[:100])
+    if not url.startswith("https://"):
+        raise Exception(f"catbox رد غير متوقع: {url[:100]}")
+    return url
 
 
 def upload_to_imgbb(image_bytes):
+    """Fallback: imgbb"""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
-    r   = requests.post(
+    r = requests.post(
         "https://api.imgbb.com/1/upload",
         data={"key": IMGBB_KEY, "image": b64},
-        timeout=60,
+        timeout=45
     )
-    rj  = r.json()
-    if rj.get("success"):
-        return rj["data"]["url"]
-    raise Exception("imgbb فشل: " + str(rj.get("error", {}).get("message", "")))
+    rj = r.json()
+    if not rj.get("success"):
+        raise Exception("فشل imgbb: " + str(rj.get("error", {}).get("message", "")))
+    return rj["data"]["url"]
 
 
 def upload_image(image_bytes):
+    """
+    يحاول catbox أولاً، إذا فشل يجرب imgbb
+    """
     try:
         return upload_to_catbox(image_bytes)
-    except Exception as e1:
+    except Exception as catbox_err:
         try:
             return upload_to_imgbb(image_bytes)
-        except Exception as e2:
-            raise Exception("فشل الرفع — catbox: " + str(e1) + " | imgbb: " + str(e2))
+        except Exception as imgbb_err:
+            raise Exception(f"فشل الرفع — catbox: {catbox_err} | imgbb: {imgbb_err}")
 
 
 def result_to_cdn(nano_url):
-    r = requests.get(nano_url, timeout=60)
+    """تحميل الصورة من nanobanana وإعادة رفعها على CDN"""
+    session = make_session(use_proxy=True)
+    r = session.get(nano_url, timeout=45)
     r.raise_for_status()
     return upload_image(r.content)
 
 
+# ═══════════════════════════════════════════
+# POST /generate
+# Body: { "prompt": "...", "aspect_ratio": "1:1" }
+# ═══════════════════════════════════════════
 @app.route("/generate", methods=["POST"])
 def generate():
-    data         = request.get_json(force=True)
+    data         = request.get_json()
     prompt       = data.get("prompt", "").strip()
     aspect_ratio = data.get("aspect_ratio", "1:1")
 
@@ -254,17 +307,22 @@ def generate():
             "sec-fetch-site": "same-origin",
             "sec-fetch-mode": "cors",
             "sec-fetch-dest": "empty",
-            "Cookie":         "sb-gfoafqcjhfqigdwtxwqt-auth-token=" + auth_cookie + "; NEXT_LOCALE=en",
+            "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
         }
+
         payload = {
             "prompt":       prompt,
             "generateType": "text-to-image",
             "modelId":      "nano-banana-pro",
             "aspectRatio":  aspect_ratio,
-            "resolution":   "4K",
+            "resolution":   "4K"
         }
-        rg      = requests.post(SITE + "/api/image/kie/generate", headers=gen_hdrs, json=payload, timeout=30)
+
+        gen_session = make_session(use_proxy=True)
+        rg      = gen_session.post(f"{SITE}/api/image/kie/generate",
+                                headers=gen_hdrs, json=payload, timeout=30)
         task_id = rg.json().get("taskId")
+
         if not task_id:
             return jsonify({"error": "فشل بدء التوليد", "details": rg.text}), 500
 
@@ -276,6 +334,11 @@ def generate():
         return jsonify({"error": str(e)}), 500
 
 
+# ═══════════════════════════════════════════
+# POST /edit
+# Body: { "prompt": "...", "image_url": "https://..." }
+# OR multipart with image file
+# ═══════════════════════════════════════════
 @app.route("/edit", methods=["POST"])
 def edit():
     prompt      = None
@@ -284,11 +347,11 @@ def edit():
 
     if request.content_type and "multipart" in request.content_type:
         prompt = request.form.get("prompt", "").strip()
-        f      = request.files.get("image")
-        if f:
-            image_bytes = f.read()
+        file   = request.files.get("image")
+        if file:
+            image_bytes = file.read()
     else:
-        data      = request.get_json(force=True)
+        data      = request.get_json()
         prompt    = data.get("prompt", "").strip()
         image_url = data.get("image_url", "").strip()
 
@@ -298,6 +361,7 @@ def edit():
         return jsonify({"error": "image_url أو image file مطلوب"}), 400
 
     try:
+        # إذا فيه ملف → ارفعه على CDN أولاً
         if image_bytes:
             image_url = upload_image(image_bytes)
 
@@ -308,18 +372,23 @@ def edit():
             "sec-fetch-site": "same-origin",
             "sec-fetch-mode": "cors",
             "sec-fetch-dest": "empty",
-            "Cookie":         "sb-gfoafqcjhfqigdwtxwqt-auth-token=" + auth_cookie + "; NEXT_LOCALE=en",
+            "Cookie":         f"sb-gfoafqcjhfqigdwtxwqt-auth-token={auth_cookie}; NEXT_LOCALE=en"
         }
+
         payload = {
             "prompt":          prompt,
             "generateType":    "image-to-image",
             "modelId":         "nano-banana-pro",
             "aspectRatio":     "1:1",
             "resolution":      "4K",
-            "sourceImageUrls": [image_url],
+            "sourceImageUrls": [image_url]
         }
-        rg      = requests.post(SITE + "/api/image/kie/generate", headers=gen_hdrs, json=payload, timeout=30)
+
+        edit_session = make_session(use_proxy=True)
+        rg      = edit_session.post(f"{SITE}/api/image/kie/generate",
+                                headers=gen_hdrs, json=payload, timeout=30)
         task_id = rg.json().get("taskId")
+
         if not task_id:
             return jsonify({"error": "فشل بدء التعديل", "details": rg.text}), 500
 
@@ -334,12 +403,18 @@ def edit():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "name":   "NanoBananaImg API",
+        "name": "NanoBananaImg API",
         "rights": "@BOTATKILWA | @x1_v5",
         "endpoints": {
-            "POST /generate": {"prompt": "str", "aspect_ratio": "1:1 | 16:9 | 9:16"},
-            "POST /edit":     {"prompt": "str", "image_url": "str (or multipart image file)"},
-        },
+            "POST /edit": {
+                "image_url": "str (or multipart image file)",
+                "prompt": "str"
+            },
+            "POST /generate": {
+                "aspect_ratio": "1:1 | 16:9 | 9:16",
+                "prompt": "str"
+            }
+        }
     })
 
 
