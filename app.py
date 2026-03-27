@@ -68,6 +68,25 @@ def make_session(use_proxy=False):
     return session
 
 
+def safe_request(method, url, max_tries=4, use_proxy=True, **kwargs):
+    """
+    يعيد المحاولة تلقائياً بـ session جديدة عند أي خطأ اتصال
+    يغطي: ConnectionAborted, RemoteDisconnected, ConnectionReset, Timeout
+    """
+    last_err = None
+    for attempt in range(max_tries):
+        if attempt > 0:
+            time.sleep(2 * attempt)
+        try:
+            session = make_session(use_proxy=use_proxy)
+            fn = session.get if method == "GET" else session.post
+            return fn(url, **kwargs)
+        except Exception as e:
+            last_err = e
+            continue
+    raise Exception("فشل الاتصال بعد " + str(max_tries) + " محاولات: " + str(last_err))
+
+
 def rand_str(n=10):
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
@@ -81,34 +100,36 @@ def gen_pkce():
 
 
 def get_auth_cookie():
-    session = make_session(use_proxy=True)
-
     # 1. جلب الدومينات
-    r       = session.get(MAIL_API + "/domains", timeout=15)
+    r       = safe_request("GET", MAIL_API + "/domains", timeout=15)
     domains = [d["domain"] for d in r.json().get("hydra:member", [])]
     email   = password = mail_token = None
 
     # 2. إنشاء إيميل
     for domain in domains:
-        e  = rand_str() + "@" + domain
-        p  = "Pass" + rand_str(6)
-        r2 = session.post(MAIL_API + "/accounts",
-                          json={"address": e, "password": p}, timeout=15)
-        if r2.status_code not in (200, 201):
+        e = rand_str() + "@" + domain
+        p = "Pass" + rand_str(6)
+        try:
+            r2 = safe_request("POST", MAIL_API + "/accounts",
+                              json={"address": e, "password": p}, timeout=15)
+            if r2.status_code not in (200, 201):
+                continue
+            r3 = safe_request("POST", MAIL_API + "/token",
+                              json={"address": e, "password": p}, timeout=15)
+            if r3.status_code != 200:
+                continue
+            email, password, mail_token = e, p, r3.json()["token"]
+            break
+        except Exception:
             continue
-        r3 = session.post(MAIL_API + "/token",
-                          json={"address": e, "password": p}, timeout=15)
-        if r3.status_code != 200:
-            continue
-        email, password, mail_token = e, p, r3.json()["token"]
-        break
 
     if not email:
         raise Exception("فشل إنشاء الإيميل")
 
     # 3. إرسال OTP
     verifier, challenge = gen_pkce()
-    session.post(
+    safe_request(
+        "POST",
         SB_URL + "/auth/v1/otp",
         params={"redirect_to": SITE + "/auth/callback?next=%2F"},
         headers=SB_HDRS,
@@ -121,34 +142,41 @@ def get_auth_cookie():
             "code_challenge_method": "s256",
         },
         timeout=15,
+        use_proxy=False,
     )
 
-    # 4. انتظار الرسالة — 3 ثواني بدلاً من 5 — max 20 محاولة = 60 ثانية
+    # 4. انتظار الرسالة — max 20 محاولة × 3 ثواني = 60 ثانية
     hdrs_mail  = {"Authorization": "Bearer " + mail_token}
     token_hash = None
 
     for _ in range(20):
         time.sleep(3)
-        r    = session.get(MAIL_API + "/messages", headers=hdrs_mail, timeout=15)
-        msgs = r.json().get("hydra:member", [])
-        if msgs:
-            r2   = session.get(MAIL_API + "/messages/" + msgs[0]["id"],
+        try:
+            r    = safe_request("GET", MAIL_API + "/messages",
                                headers=hdrs_mail, timeout=15)
-            body = r2.json().get("text", "") or str(r2.json().get("html", [""])[0])
-            m    = re.search(r"token_hash=(pkce_[^&\s\"<]+)", body)
-            if m:
-                token_hash = m.group(1)
-                break
+            msgs = r.json().get("hydra:member", [])
+            if msgs:
+                r2   = safe_request("GET", MAIL_API + "/messages/" + msgs[0]["id"],
+                                   headers=hdrs_mail, timeout=15)
+                body = r2.json().get("text", "") or str(r2.json().get("html", [""])[0])
+                m    = re.search(r"token_hash=(pkce_[^&\s\"<]+)", body)
+                if m:
+                    token_hash = m.group(1)
+                    break
+        except Exception:
+            continue
 
     if not token_hash:
         raise Exception("لم يصل OTP")
 
     # 5. التحقق
-    rv = session.post(
+    rv = safe_request(
+        "POST",
         SB_URL + "/auth/v1/verify",
         headers=SB_HDRS,
         json={"token_hash": token_hash, "type": "email", "code_verifier": verifier},
         timeout=15,
+        use_proxy=False,
     )
     rj            = rv.json()
     access_token  = rj.get("access_token")
@@ -157,12 +185,14 @@ def get_auth_cookie():
     user          = rj.get("user", {})
 
     if not access_token:
-        rx = session.post(
+        rx = safe_request(
+            "POST",
             SB_URL + "/auth/v1/token",
             params={"grant_type": "pkce"},
             headers=SB_HDRS,
             json={"auth_code": token_hash, "code_verifier": verifier},
             timeout=15,
+            use_proxy=False,
         )
         rj            = rx.json()
         access_token  = rj.get("access_token")
