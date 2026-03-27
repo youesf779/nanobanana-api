@@ -18,8 +18,11 @@ CORS(app)
 SITE      = "https://nanobananaimg.com"
 SB_URL    = "https://gfoafqcjhfqigdwtxwqt.supabase.co"
 SB_ANON   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdmb2FmcWNqaGZxaWdkd3R4d3F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUzNTY1NDksImV4cCI6MjA3MDkzMjU0OX0.Qe1pmu-LTkQNqNjKEqcARyfqhtlL758eu2gakrz66Og"
-MAIL_API  = "https://api.mail.tm"
 IMGBB_KEY = "b37210104f155800c8b4d358c75a8ec7"
+
+# temp-mail.io internal API — بدون API key
+TMAIL_API  = "https://api.internal.temp-mail.io/api/v3"
+TMAIL_DOMAINS = ["rfcdrive.com", "mailnull.com", "spamgourmet.com", "yomail.info"]
 
 PROXY = {
     "http":  "http://brd-customer-hl_43f07ec8-zone-isp_proxy1-ip-178.171.83.16:e0zlux04lzwo@brd.superproxy.io:33335",
@@ -50,6 +53,12 @@ SB_HDRS = {
     "referer":                SITE + "/",
 }
 
+TMAIL_HDRS = {
+    "User-Agent":   UA,
+    "Content-Type": "application/json",
+    "Accept":       "application/json",
+}
+
 
 def make_session(use_proxy=False):
     session = requests.Session()
@@ -70,7 +79,7 @@ def make_session(use_proxy=False):
 
 def safe_request(method, url, max_tries=4, use_proxy=True, **kwargs):
     """
-    يعيد المحاولة تلقائياً بـ session جديدة عند أي خطأ اتصال
+    يعيد المحاولة بـ session جديدة عند أي خطأ اتصال
     يغطي: ConnectionAborted, RemoteDisconnected, ConnectionReset, Timeout
     """
     last_err = None
@@ -99,34 +108,69 @@ def gen_pkce():
     return verifier, challenge
 
 
-def get_auth_cookie():
-    # 1. جلب الدومينات
-    r       = safe_request("GET", MAIL_API + "/domains", timeout=15)
-    domains = [d["domain"] for d in r.json().get("hydra:member", [])]
-    email   = password = mail_token = None
+# ══════════════════════════════════════════════════
+# إنشاء إيميل مؤقت عبر temp-mail.io internal API
+# ══════════════════════════════════════════════════
+def create_temp_email():
+    """
+    إنشاء إيميل مؤقت باستخدام temp-mail.io internal API
+    Returns: (email_address, token)
+    """
+    name = rand_str(10)
 
-    # 2. إنشاء إيميل
-    for domain in domains:
-        e = rand_str() + "@" + domain
-        p = "Pass" + rand_str(6)
+    for domain in TMAIL_DOMAINS:
         try:
-            r2 = safe_request("POST", MAIL_API + "/accounts",
-                              json={"address": e, "password": p}, timeout=15)
-            if r2.status_code not in (200, 201):
-                continue
-            r3 = safe_request("POST", MAIL_API + "/token",
-                              json={"address": e, "password": p}, timeout=15)
-            if r3.status_code != 200:
-                continue
-            email, password, mail_token = e, p, r3.json()["token"]
-            break
+            r = safe_request(
+                "POST",
+                TMAIL_API + "/email/new",
+                headers=TMAIL_HDRS,
+                json={"name": name, "domain": domain},
+                timeout=15,
+                use_proxy=True,
+            )
+            rj = r.json()
+            email   = rj.get("email", "")
+            token   = rj.get("token", "")
+            if email and "@" in email:
+                return email, token
         except Exception:
             continue
 
-    if not email:
-        raise Exception("فشل إنشاء الإيميل")
+    raise Exception("فشل إنشاء الإيميل المؤقت")
 
-    # 3. إرسال OTP
+
+def wait_for_otp_message(email, token, max_tries=20, interval=3):
+    """
+    انتظار وصول رسالة OTP من temp-mail.io
+    Returns: body_text of first message
+    """
+    for _ in range(max_tries):
+        time.sleep(interval)
+        try:
+            r = safe_request(
+                "GET",
+                TMAIL_API + "/email/" + email + "/messages",
+                headers=TMAIL_HDRS,
+                timeout=15,
+                use_proxy=True,
+            )
+            messages = r.json().get("messages", [])
+            if messages:
+                body = messages[0].get("body_text", "") or messages[0].get("body_html", "")
+                return body
+        except Exception:
+            continue
+
+    raise Exception("لم تصل رسالة OTP")
+
+
+def get_auth_cookie():
+    """إنشاء حساب جديد وإرجاع auth cookie"""
+
+    # 1. إنشاء إيميل مؤقت
+    email, mail_token = create_temp_email()
+
+    # 2. إرسال OTP من Supabase
     verifier, challenge = gen_pkce()
     safe_request(
         "POST",
@@ -145,29 +189,14 @@ def get_auth_cookie():
         use_proxy=False,
     )
 
-    # 4. انتظار الرسالة — max 20 محاولة × 3 ثواني = 60 ثانية
-    hdrs_mail  = {"Authorization": "Bearer " + mail_token}
-    token_hash = None
+    # 3. انتظار وصول الرسالة
+    body = wait_for_otp_message(email, mail_token)
 
-    for _ in range(20):
-        time.sleep(3)
-        try:
-            r    = safe_request("GET", MAIL_API + "/messages",
-                               headers=hdrs_mail, timeout=15)
-            msgs = r.json().get("hydra:member", [])
-            if msgs:
-                r2   = safe_request("GET", MAIL_API + "/messages/" + msgs[0]["id"],
-                                   headers=hdrs_mail, timeout=15)
-                body = r2.json().get("text", "") or str(r2.json().get("html", [""])[0])
-                m    = re.search(r"token_hash=(pkce_[^&\s\"<]+)", body)
-                if m:
-                    token_hash = m.group(1)
-                    break
-        except Exception:
-            continue
-
-    if not token_hash:
-        raise Exception("لم يصل OTP")
+    # 4. استخراج token_hash
+    m = re.search(r"token_hash=(pkce_[^&\s\"<\]]+)", body)
+    if not m:
+        raise Exception("لم يُعثر على token_hash في الرسالة")
+    token_hash = m.group(1)
 
     # 5. التحقق
     rv = safe_request(
